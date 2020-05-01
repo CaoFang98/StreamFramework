@@ -143,6 +143,8 @@ wss.on('connection', ws => {
             anc_ws = null;
         // else
             // numClients--;
+        if(cur_aud_ws === ws)
+            cur_aud_ws = null;
     });
 });
 
