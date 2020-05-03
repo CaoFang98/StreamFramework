@@ -26,6 +26,8 @@ var pcConfig = {
     }]
 };
 
+var lastResult;
+
 var room = 'room';
 var ws = new WebSocket('wss://' + location.host);
 
@@ -33,6 +35,7 @@ var ws = new WebSocket('wss://' + location.host);
 // var recordButton, endRecordButton, captureButton;
 const CALLBtnId = 'call', VIEWERBtnId = 'viewer', TERMINATEBtnId = 'terminate',
     RECORDBtnId = 'record', ENDRECORDBtnId = 'endRecord', CAPTUREBtnId = 'captureScreen';
+const CONNECTIONCOUNTTagId = 'connCnt', BANDWIDTHTagId = 'bandwidth';
 
 var count = 0;
 function nextID(){
@@ -46,6 +49,26 @@ function disableButton(btnId){
 
 function enableButton(btnId){
     document.getElementById(btnId).disabled = false;
+}
+
+function showBitrate(connCnt, bitrate){
+    if(connCnt !== null){// Presenter
+        var connCntTag = document.getElementById(CONNECTIONCOUNTTagId);
+        var meanBitrateTag = document.getElementById(BANDWIDTHTagId);
+        connCntTag.style.cssText = "font-size: large;float: right;margin-top: -10px;";
+        meanBitrateTag.style.cssText = "font-size: large;float: right;clear: right;margin-top: -15px;";
+        connCntTag.innerText = 'Connection Count: ' + connCnt;
+        meanBitrateTag.innerText = 'Mean Video Bandwidth: ' + bitrate.toString() + ' kbps';
+    }else{// Viewer
+        var bitrateTag = document.getElementById(BANDWIDTHTagId);
+        bitrateTag.style.cssText = "font-size: large;float: right;clear: right;";
+        bitrateTag.innerText = 'Video Bandwidth: ' + bitrate.toString() + ' kbps';
+    }
+}
+
+function clearBitrate(){
+    document.getElementById(CONNECTIONCOUNTTagId).innerText = '';
+    document.getElementById(BANDWIDTHTagId).innerText = '';
 }
 
 window.onload = function() {
@@ -69,6 +92,101 @@ window.onload = function() {
     disableButton(ENDRECORDBtnId);
     disableButton(CAPTUREBtnId);
 }
+
+window.setInterval(() => {
+    if(isPresenter === true){
+        var meanBitrate = 0;
+        var len = Object.keys(pcArray).length;
+        var pcCnt = 0;
+        pcArray.forEach(item => {
+            // pcCnt += 1;
+            var id = item.pcid;
+            var pc = item.pc;
+            var lastResult = item.lastResult;
+            pc.getSenders().forEach(sender => {
+                if(!sender.dtmf){
+                    // console.log(sender);
+                    sender.getStats().then(res => {//原来是异步编程的问题!!! then...
+                        res.forEach(report => {
+                            // console.log(report);
+                            if(report.type === 'outbound-rtp'){
+                                if(report.isRemote)
+                                    return;
+                                pcCnt++;
+                                const now = report.timestamp;
+                                const bytes = report.bytesSent;
+                                if(lastResult && lastResult.has(report.id)){
+                                    const bitrate = 8*(bytes-lastResult.get(report.id).bytesSent)/
+                                        (now-lastResult.get(report.id).timestamp);
+                                    // console.log(bitrate + ' kbps');
+                                    meanBitrate += bitrate;
+                                    // console.log(bitrate, meanBitrate);
+                                }
+                                // console.log(len, pcCnt, meanBitrate);
+                                if(pcCnt === len && pcCnt){
+                                    // pcCnt            当前 RTCPeerConnection总数
+                                    // totalBitrate     总比特率
+                                    // meanBitrate      平均比特率
+                                    var totalBitrate = meanBitrate;
+                                    meanBitrate = meanBitrate/pcCnt;
+                                    if(meanBitrate)
+                                        // document.getElementById('connCnt').innerText = 
+                                        //     'Connection Count: ' + len;
+                                        // document.getElementById(BANDWIDTHTagId).innerText = 
+                                        //     // 'Connection Count: ' + len + ' '
+                                        //     'Mean Video Bandwidth: ' + meanBitrate.toString() + ' kbps';
+                                        showBitrate(len, meanBitrate);
+                                }
+                            }
+                            // console.log('1 ' + meanBitrate);
+                        });
+                        pcArray[id].lastResult = res;
+                        // console.log('2 ' + meanBitrate);//此时的 meanBitrate仍为正常值
+                        // console.log(pcArray[id]);
+                    });
+                    // console.log('3 ' + meanBitrate);//此时的 meanBitrate已经变成了 0
+                }
+            });
+        });
+        if(!len)
+            showBitrate(0, 0);
+        // console.log(pcCnt, meanBitrate);
+        // if(pcCnt)
+        //     meanBitrate = meanBitrate/pcCnt;
+        // if(meanBitrate)
+        //     document.getElementById('bandwidth').innerText = 
+        //         'Mean Video Bandwidth: ' + meanBitrate.toString() + ' kbps';
+    }
+    else if(isPresenter === false && pc){
+        pc.getReceivers().forEach(receiver => {
+            // console.log(receiver);
+            if(receiver.track.kind === 'video'){
+                receiver.getStats().then(res => {
+                    res.forEach(report => {
+                        // console.log(report);
+                        if(report.type === 'inbound-rtp'){
+                            if(report.isRemote)
+                                return;
+                            // console.log(report);
+                            const now = report.timestamp;
+                            const bytes = report.bytesReceived;
+                            if(lastResult && lastResult.has(report.id)){
+                                const bitrate = 8*(bytes-lastResult.get(report.id).bytesReceived)/
+                                    (now-lastResult.get(report.id).timestamp);
+                                // console.log(bitrate + ' kbps');
+                                // document.getElementById(BANDWIDTHTagId).innerText = 
+                                //     'Video Bandwidth: ' + bitrate.toString() + ' kbps';
+                                showBitrate(null, bitrate);
+                            }
+                        }
+                    });
+                    lastResult = res;
+                });
+            }
+        });
+        // console.log('---')
+    }
+}, 1000);
 
 window.onbeforeunload = function() {
 	ws.close();
@@ -199,6 +317,8 @@ function stop() {
         pc = null;
         pcArray = [];
         hideSpinner(video);
+        // document.getElementById(BANDWIDTHTagId).innerText = '';
+        clearBitrate();
 
         enableButton(CALLBtnId);
         enableButton(VIEWERBtnId);
@@ -443,13 +563,14 @@ function presenterReady(){
         if(pc.connectionState === 'connected'){
             console.log('Presenter: RTCPeerConnection successfully setup!');
             // pcArray[id] = {'pcid': id, 'pc': pc, 'dc': dc};
-            pcArray[id] = {'pcid': id, 'pc': pc};
+            pcArray[id] = {'pcid': id, 'pc': pc, 'lastResult': null};
             //pc = null;
         }
-        // else if(pc.connectionState === 'disconnected'){
-        //     本意当某一个 Viewer关闭连接时，其对应的 pc从 Presenter的 pcArray中剔除
-        //     但在规模较小的应用场景下影响不大
-        // }
+        else if(pc.connectionState === 'disconnected'||pc.connectionState === 'closed'
+            ||pc.connectionState === 'failed'){
+            // if(pcArray[id])
+                delete pcArray[id];
+        }
     };
 
     pc.createOffer().then(onCreateOffer)
@@ -528,6 +649,8 @@ function viewerReady(){
             isPresenter = null;
             pc = null;
             hideSpinner(video);
+            // document.getElementById(BANDWIDTHTagId).innerText = '';
+            clearBitrate();
 
             enableButton(CALLBtnId);
             enableButton(VIEWERBtnId);

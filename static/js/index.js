@@ -41,8 +41,11 @@ var constraints = {
     audio: true
 };
 
+var lastResult;
+
 const CALLBtnId = 'call', VIEWERBtnId = 'viewer', TERMINATEBtnId = 'terminate',
-    RECORDBtnId = 'record', ENDRECORDBtnId = 'endRecord', CAPTUREBtnId = 'captureScreen';
+	RECORDBtnId = 'record', ENDRECORDBtnId = 'endRecord', CAPTUREBtnId = 'captureScreen';
+const CONNECTIONCOUNTTagId = 'connCnt', BANDWIDTHTagId = 'bandwidth';
 
 function disableButton(btnId){
 	document.getElementById(btnId).disabled = true;
@@ -50,6 +53,29 @@ function disableButton(btnId){
 	
 function enableButton(btnId){
 	document.getElementById(btnId).disabled = false;
+}
+
+function showBitrate(connCnt, bitrate){
+    // if(connCnt !== null){// Presenter
+    //     var connCntTag = document.getElementById(CONNECTIONCOUNTTagId);
+    //     var meanBitrateTag = document.getElementById(BANDWIDTHTagId);
+    //     connCntTag.style.cssText = "font-size: large;float: right;margin-top: -10px;";
+    //     meanBitrateTag.style.cssText = "font-size: large;float: right;clear: right;margin-top: -15px;";
+    //     connCntTag.innerText = 'Connection Count: ' + connCnt;
+    //     meanBitrateTag.innerText = 'Mean Video Bandwidth: ' + bitrate.toString() + ' kbps';
+    // }else{// Viewer
+    //     var bitrateTag = document.getElementById(BANDWIDTHTagId);
+    //     bitrateTag.style.cssText = "font-size: large;float: right;clear: right;";
+    //     bitrateTag.innerText = 'Video Bandwidth: ' + bitrate.toString() + ' kbps';
+	// }
+	var bitrateTag = document.getElementById(BANDWIDTHTagId);
+    bitrateTag.style.cssText = "font-size: large;float: right;clear: right;";
+    bitrateTag.innerText = 'Video Bandwidth: ' + bitrate.toString() + ' kbps';
+}
+
+function clearBitrate(){
+    // document.getElementById(CONNECTIONCOUNTTagId).innerText = '';
+    document.getElementById(BANDWIDTHTagId).innerText = '';
 }
 
 window.onload = function() {
@@ -69,6 +95,53 @@ window.onload = function() {
     disableButton(CAPTUREBtnId);
 }
 
+window.setInterval(() => {
+	if(isPresenter === true && pc){
+		pc.getSenders().forEach(sender => {
+			if(!sender.dtmf){
+				sender.getStats().then(res => {
+					res.forEach(report => {
+						if(report.type === 'outbound-rtp'){
+							if(report.isRemote)
+								return;
+							const now = report.timestamp;
+							const bytes = report.bytesSent;
+							if(lastResult && lastResult.has(report.id)){
+								const bitrate = 8*(bytes-lastResult.get(report.id).bytesSent)/
+									(now-lastResult.get(report.id).timestamp);
+								// console.log(bitrate);
+								showBitrate(null, bitrate);
+							}
+						}
+					});
+					lastResult = res;
+				});
+			}
+		});
+	}else if(isPresenter === false && pc){
+		pc.getReceivers().forEach(receiver => {
+            if(receiver.track.kind === 'video'){
+                receiver.getStats().then(res => {
+                    res.forEach(report => {
+                        if(report.type === 'inbound-rtp'){
+                            if(report.isRemote)
+                                return;
+                            const now = report.timestamp;
+                            const bytes = report.bytesReceived;
+                            if(lastResult && lastResult.has(report.id)){
+                                const bitrate = 8*(bytes-lastResult.get(report.id).bytesReceived)/
+                                    (now-lastResult.get(report.id).timestamp);
+                                showBitrate(null, bitrate);
+                            }
+                        }
+                    });
+                    lastResult = res;
+                });
+            }
+        });
+	}
+}, 1000);
+
 window.onbeforeunload = function() {
 	ws.close();
 }
@@ -85,7 +158,7 @@ ws.onmessage = function(message) {
 		viewerResponse(parsedMessage);
 		break;
 	case 'stopCommunication':
-		dispose();
+		stop();
 		break;
 	case 'iceCandidate':
 		webRtcPeer.addIceCandidate(parsedMessage.candidate)
@@ -99,7 +172,7 @@ function presenterResponse(message) {
 	if (message.response != 'accepted') {
 		var errorMsg = message.message ? message.message : 'Unknow error';
 		console.warn('Call not accepted for the following reason: ' + errorMsg);
-		dispose();
+		stop();
 	} else {
 		webRtcPeer.processAnswer(message.sdpAnswer, error => {
 			if(error) return onError(error);
@@ -126,7 +199,7 @@ function viewerResponse(message) {
 	if (message.response != 'accepted') {
 		var errorMsg = message.message ? message.message : 'Unknow error';
 		console.warn('Call not accepted for the following reason: ' + errorMsg);
-		dispose();
+		stop();
 	} else {
 		webRtcPeer.processAnswer(message.sdpAnswer, error => {
 			if(error) return onError(error);
@@ -218,9 +291,12 @@ function viewer() {
 	if (!webRtcPeer) {
 		showSpinner(video);
 
+		pc = new RTCPeerConnection(pcConfig);
+
 		var options = {
 			remoteVideo: video,
 			onicecandidate : onIceCandidate,
+			peerConnection : pc,
 			configuration: [{'urls': 'turn:helloturn.cn:3478', 'username': 'hellouser', 'credential': 'hellooo123'}]
 		}
 
@@ -261,15 +337,19 @@ function stop() {
             rtcStream.getTracks().forEach(e => e.stop());
         if(captureStream)
 			captureStream.getTracks().forEach(e => e.stop());
+		if(pc)
+			pc.close();
 		isPresenter = null;
 		videoStream = null;
 		rtcStream = null;
 		captureStream = null;
+		pc = null;
 		var message = {
 			id : 'stop'
 		}
 		sendMessage(message);
 		dispose();
+		clearBitrate();
 
 		enableButton(CALLBtnId);
         enableButton(VIEWERBtnId);
